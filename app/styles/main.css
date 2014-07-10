@@ -1,0 +1,78 @@
+body {
+    background: #fafafa;
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    color: #333;
+}
+
+.hero-unit {
+    margin: 50px auto 0 auto;
+    width: 500px;
+    height: 400px;
+    font-size: 12px;
+    background-color: #eee;
+    border-radius: 6px;
+    padding: 60px;
+}
+
+
+.browsehappy {
+    margin: 0.2em 0;
+    background: #ccc;
+    color: #000;
+    padding: 0.2em 0;
+}
+
+.am-console {
+    width: 100%;
+    height: 100%;
+    font-family: monospace;
+}
+
+.am-console .am-console-input {
+    font-family: monospace;
+    width: 100%; 
+}
+
+.am-console .am-console-input::before {
+    content: ">";
+}
+
+.am-console .am-console-output {
+    overflow-y: scroll;
+    height: 350px;
+}
+
+.am-console .am-console-output h1 {
+    font-size: 18px;
+    font-weight: bolder;
+}
+
+.am-console .am-console-output h2 {
+    font-size: 16px;
+    font-weight: bold;
+}
+
+.am-console .am-console-output h3 {
+    font-size: 14px;
+}
+
+.am-console .am-console-output .error {
+    color: #FF0000;
+}
+
+.am-console .am-console-output .command {
+    font-weight: bold;
+    color: #DBA901;
+}
+
+.am-console .am-console-output .description {
+    font-style: italic;
+}
+
+.am-console .am-console-output .information {
+    color: #0101DF;
+}
+
+.am-console .am-console-output .location {
+    color: #DBA901;
+}
