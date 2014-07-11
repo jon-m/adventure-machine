@@ -1,9 +1,10 @@
-var jQuery = jQuery || null;
+/*jslint browser: true*/
+/*global jQuery, AdventureMachine*/
+
 if (!jQuery) {
     throw 'Missing dependency: compatible version of jQuery required';
 }
 
-var AdventureMachine = AdventureMachine || null;
 if (!AdventureMachine) {
     throw 'Missing dependency: AdventureMachine not found';
 }
@@ -16,7 +17,6 @@ if (!AdventureMachine) {
 
     var console,
         game,
-        echo,
         startRoom,
         southRoom,
         corridor,
@@ -43,7 +43,7 @@ if (!AdventureMachine) {
                 this.game.printMessage('The light of the torch reveals a plastic key card, which you pick up and place in your pocket.');
                 this.game.addItemToInventory('lift-keycard');
             } else {
-                this.game.print("You can't use this item on " + target.title);
+                this.game.print('You can\'t use this item on ' + target.title);
             }
         }),
         new AdventureMachine.Item('lift-keycard', 'Keycard', 'An electronic keycard, presumably this used to belong to an employee working in the building, and is used to gain access to authorised areas of the office.', function (target) {
@@ -51,7 +51,7 @@ if (!AdventureMachine) {
                 this.game.printMessage('You swipe the keycard through the control panel, which promptly makes an eletronic chirp and displays the message "Access Granted" as the lift doors slide quietly open. You enter, and press the button for the next floor.');
                 this.game.currentLocation.addExit('Lift', 'corridor-1');
             } else {
-                this.game.print("You can't use this item on " + target.title);
+                this.game.print('You can\'t use this item on ' + target.title);
             }
         }),
         new AdventureMachine.Fixture('dark-cupboard', 'Dark cupboard', 'A service cupboard of some kind. The light is broken. In the dim light spilling into the space from the room you are standing in you can just about make out some mops and dusty shelves in the gloom, but it is too dark to see properly.'),

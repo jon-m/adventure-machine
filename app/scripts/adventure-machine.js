@@ -1,4 +1,7 @@
-var jQuery = jQuery || null;
+/*jslint browser: true*/
+/*global jQuery*/
+/*exported AdventureMachine*/
+
 if (!jQuery) {
     throw 'Missing dependency: compatible version of jQuery required';
 }
@@ -29,8 +32,6 @@ var AdventureMachine = (function ($) {
         Command,
         // General-purpose command that accepts a callback function to execute when the command is executed
         CallbackCommand,
-        // Noddy Command to dsplay some text in the console output area
-        EchoCommand,
         // In-game locations
         Location,
         // Details about an available exit
@@ -122,7 +123,7 @@ var AdventureMachine = (function ($) {
         this.outputArea.scrollTop(this.outputArea[0].scrollHeight);
     };
     Console.prototype.parse = function (commandText) {
-        this.display("> " + commandText);
+        this.display('> ' + commandText);
         var args = [],
             readingPart = false,
             part = '',
@@ -374,7 +375,7 @@ var AdventureMachine = (function ($) {
             item;
         
         if (!location || !location instanceof Location) {
-            this.printError("Unable to add items to location; Location does not exist");
+            this.printError('Unable to add items to location; Location does not exist');
         } else if (itemCodeArray && itemCodeArray instanceof Array) {
             for (i = 0; i < itemCodeArray.length; i += 1) {
                 itemCode = itemCodeArray[i];
@@ -386,7 +387,7 @@ var AdventureMachine = (function ($) {
                 }
             }
         } else {
-            this.printError("Unable to add items to location; No items defined");
+            this.printError('Unable to add items to location; No items defined');
         }
     };
     // Commands that apply to all games
@@ -420,7 +421,7 @@ var AdventureMachine = (function ($) {
                 var commands,
                     command,
                     i,
-                    message = "";
+                    message = '';
                 if (commandParts && commandParts.length && commandParts.length > 0 && commandParts[0].toUpperCase() === 'HELP') {
                     commands = this.game.availableCommands;
                     if (commandParts.length > 1) {
@@ -465,7 +466,7 @@ var AdventureMachine = (function ($) {
                         for (i = 1; i < commandParts.length; i += 1) {
                             if (commandParts[i].length > 0) {
                                 if (itemName.length > 0) {
-                                    itemName += " ";
+                                    itemName += ' ';
                                 }
                                 itemName += commandParts[i];
                             }
@@ -535,11 +536,10 @@ var AdventureMachine = (function ($) {
                 }
             }),
             // Take an item from the current location
-            use = new CallbackCommand('use', 'use &lt;<span class="command">item</span>&gt; - use an item, e.g "use gold key" or "use key on blue door"', function (commandText, commandParts) {
+            use = new CallbackCommand('use', 'use &lt;<span class="command">item</span>&gt; - use an item, e.g "use gold key" or "use key on blue door"', function (commandText) {
                 var simplePattern,
                     fullPattern,
                     regexResult,
-                    commandName,
                     itemName,
                     targetName,
                     target,
@@ -548,16 +548,16 @@ var AdventureMachine = (function ($) {
                 
                 if (commandText && commandText.trim().toUpperCase().startsWith(this.getShortName().toUpperCase())) {
                     
-                    simplePattern = "^use[ ]+(.*)";
-                    fullPattern = simplePattern + "[ ]+on[ ]+(.*)";
-                    regexResult = new RegExp(fullPattern, "i").exec(commandText);
+                    simplePattern = '^use[ ]+(.*)';
+                    fullPattern = simplePattern + '[ ]+on[ ]+(.*)';
+                    regexResult = new RegExp(fullPattern, 'i').exec(commandText);
                     if (regexResult) {
                         // Full command matched
                         itemName = regexResult[1];
                         targetName = regexResult[2];
                         target = this.game.inventory.findItemByName(targetName) || this.game.currentLocation.items.findItemByName(targetName);
                     } else {
-                        regexResult = new RegExp(simplePattern, "i").exec(commandText);
+                        regexResult = new RegExp(simplePattern, 'i').exec(commandText);
                         if (regexResult) {
                             // Basic command matched
                             itemName = regexResult[1];
