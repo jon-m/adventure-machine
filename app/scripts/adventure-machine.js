@@ -32,6 +32,13 @@ var AdventureMachine = (function ($) {
         Command,
         // General-purpose command that accepts a callback function to execute when the command is executed
         CallbackCommand,
+        // Command that supports two forms: the command name and a target, or the command name, target preposition and second target
+        // E.g. use item, use item on otheritem
+        RegexCallbackCommand,
+        // Starting point for interactive elements of the game, e.g. locations and NPCs
+        BaseEntity,
+        // Characters that the player may interact with
+        NPC,
         // In-game locations
         Location,
         // Details about an available exit
@@ -50,7 +57,7 @@ var AdventureMachine = (function ($) {
      * the results. When a command is entered, a "onCommand" event is raised on the console instance that has the
      * details of the command entered.
      *
-     * TODO: Define standard 'message', 'error', 'heading' formats/methods
+     * TODO: Factor out into completely separate component/namespace
      */
     Console = function (config) {
         this.config = undefined;
@@ -168,7 +175,7 @@ var AdventureMachine = (function ($) {
     };
     
     /*
-     * Define the ExitCommand class, which allows users to move into new in-game locations
+     * Simple command that fires the provided callback
      */
     CallbackCommand = function (shortName, description, callback) {
         Command.call(this, shortName, description);
@@ -178,6 +185,64 @@ var AdventureMachine = (function ($) {
     CallbackCommand.prototype.constructor = CallbackCommand;
     CallbackCommand.prototype.execute = function () {
         this.callback.apply(this, arguments);
+    };
+    
+    /*
+     * Command that parses input assuming it will be in one of two formats:
+     * 1) "<command> <target>" - e.g. "use key"
+     * 2) "<command> <target1> <preposition> <target2>" - e.g. "use key on door"
+     * Uses regexes to match the command name and parameters based on this format, and if either format is matched will
+     * execute the provided callback providing the extracted parameters. If the command does not match the format, but
+     * does start with the provided command name, then the command usage description is displayed instead.
+     * If the command does not start with the specified command name, then it is ignored as entered commands are passed
+     * through all of the registered Command instances to find suitable handlers.
+     */
+    RegexCallbackCommand = function (commandName, preposition, description, callback) {
+        var simplePattern,
+            fullPattern;
+        
+        Command.call(this, commandName, description);
+        
+        simplePattern = '^' + commandName + '[ ]+(.*)';
+        this.shortformRegex = new RegExp(simplePattern, 'i');
+        
+        if (preposition) {
+            fullPattern = simplePattern + '[ ]+' + preposition + '[ ]+(.*)';
+            this.longformRegex = new RegExp(fullPattern, 'i');
+        }
+        
+        this.callback = callback;
+        
+    };
+    RegexCallbackCommand.prototype = new Command();
+    RegexCallbackCommand.prototype.constructor = RegexCallbackCommand;
+    RegexCallbackCommand.prototype.execute = function (commandText) {
+        var regexResult,
+            target1,
+            target2;
+        
+        if (commandText.toUpperCase().startsWith(this.shortName.toUpperCase())) {
+            regexResult = (this.longformRegex) ? this.longformRegex.exec(commandText) : null;
+            if (regexResult) {
+                // Full command matched
+                target1 = regexResult[1];
+                target2 = regexResult[2];
+            } else {
+                regexResult = this.shortformRegex.exec(commandText);
+                if (regexResult) {
+                    // Basic command matched
+                    target1 = regexResult[1];
+                }
+            }
+
+            if (!target1 || target1.length === 0) {
+                // Incorrect usage, e.g. only command name used, print usage
+                this.game.printInformation('Usage:<br/>' + this.getDescription());
+            } else {
+                this.callback.apply(this, [commandText, target1, target2]);
+            }
+        }
+        
     };
     
     
@@ -196,10 +261,51 @@ var AdventureMachine = (function ($) {
         this.locations = {};
         // The in-game location that the user is currently exploring
         this.currentLocation = undefined;
+        // Available NPCs
+        this.npcs = undefined;
         // Items available in-game, usually by finding them in locations or given by NPCs
         this.availableItems = undefined;
         // The collection of items picked up by the player when exploring the game
         this.inventory = undefined;
+        // Centralised timer to manage scheduled events from NPCs, items etc
+        this.centralTimer = {
+
+            timerID: 0,
+            timers: [],
+
+            add: function (fn) {
+                this.timers.push(fn);
+            },
+
+            start: function () {
+                var centralTimer = this;
+                if (this.timerID) {
+                    return;
+                }
+                
+                (function runNext () {
+                    if (centralTimer.timers.length > 0) {
+                        for (var i = 0; i < centralTimer.timers.length; i++) {
+                            if (centralTimer.timers[i]() === false) {
+                                centralTimer.timers.splice(i, 1);
+                                i--;
+                            }
+                        }
+                        centralTimer.timerID = setTimeout(runNext, 0);
+                    }
+                })();
+            },
+
+            stop: function () {
+                clearTimeout(this.timerID);
+                this.timerID = 0;
+            },
+            
+            clear: function () {
+                this.stop();
+                this.timers = [];
+            }
+        };
     };
     Game.prototype.clearCommands = function () {
         this.availableCommands = [];
@@ -258,15 +364,19 @@ var AdventureMachine = (function ($) {
         if (this.locations[locationId]) {
             
             this.currentLocation = this.locations[locationId];
-            // TODO: Merge the general commands from the Game class with specific commands from the game data being loaded, the current NPCs, current inventory
+            this.currentLocation.incrementVisits();
+            // TODO: Merge these commands with the ones provided by loaded NPCs
             this.availableCommands = this.getCommands().concat(this.storyCommands).concat(this.currentLocation.getCommands());
             for (i = 0; i < this.availableCommands.length; i += 1) {
                 this.availableCommands[i].game = this;
             }
             
-            // TODO: Load NPCs
-            
             this.displayCurrentLocationInfo();
+            
+            this.centralTimer.clear();
+            if (this.currentLocation.onTickCallback) {
+                this.centralTimer.add(this.currentLocation.onTickCallback);
+            }
         } else {
             this.printError('Error: "' + locationId + '" is not a valid location!');
         }
@@ -276,10 +386,12 @@ var AdventureMachine = (function ($) {
             output,
             item,
             itemCode,
+            npc,
+            npcCode,
             found;
         
-        this.printSectionTitle(this.currentLocation.title);
-        this.printDescription(this.currentLocation.description);
+        this.printSectionTitle(this.currentLocation.getTitle());
+        this.printDescription(this.currentLocation.getDescription());
         
         output = 'Available exits:<br/>';
         found = false;
@@ -308,6 +420,23 @@ var AdventureMachine = (function ($) {
             }
         }
         
+        if (this.currentLocation.npcs) {
+            output = 'NPCs:<br/>';
+            found = false;
+            for (npcCode in this.currentLocation.npcs.items) {
+                if (this.currentLocation.npcs.items.hasOwnProperty(npcCode)) {
+                    npc = this.currentLocation.npcs.getItem(npcCode);
+                    if (npc) {
+                        found = true;
+                        output += '<span class="location">' + npc.title + '</span><br/>';
+                    }
+                }
+            }
+            if (found === true) {
+                this.printInformation(output);
+            }
+        }
+        
     };
     // Start a new game
     Game.prototype.newGame = function (gameData) {
@@ -324,6 +453,7 @@ var AdventureMachine = (function ($) {
         this.availableItems = new Inventory(this, gameData.items);
         this.inventory = new Inventory(this);
         this.addItemsToInventory(gameData.inventory);
+        this.npcs = new Inventory(this, gameData.npcs);
         
         gameData.locations = gameData.locations || [];
         if (gameData.locations.length === 0) {
@@ -334,6 +464,8 @@ var AdventureMachine = (function ($) {
             location = gameData.locations[i];
             itemCodeArray = location.itemCodes;
             this.addItemsToLocation(location, itemCodeArray);
+            itemCodeArray = location.npcCodes;
+            this.addNpcsToLocation(location, itemCodeArray);
             this.locations[location.id] = location;
         }
         
@@ -347,6 +479,7 @@ var AdventureMachine = (function ($) {
             this.printError('Unable to add item "' + itemCode + '" to inventory; Item does not exist.');
         } else {
             this.inventory.addItem(item);
+            this.printInformation('Item "' + itemCode + '" added to inventory');
         }
         
     };
@@ -390,39 +523,67 @@ var AdventureMachine = (function ($) {
             this.printError('Unable to add items to location; No items defined');
         }
     };
+    Game.prototype.addNpcsToLocation = function (location, npcCodeArray) {
+        var i,
+            npcCode,
+            npc;
+        
+        if (!location || !location instanceof Location) {
+            this.printError('Unable to add NPCs to location; Location does not exist');
+        } else if (npcCodeArray && npcCodeArray instanceof Array) {
+            for (i = 0; i < npcCodeArray.length; i += 1) {
+                npcCode = npcCodeArray[i];
+                npc = this.npcs.getItem(npcCode);
+                if (!npc) {
+                    this.printError('Unable to add NPC "' + npcCode + '" to location; NPC does not exist.');
+                } else {
+                    location.addNpc(npc);
+                }
+            }
+        } else {
+            this.printError('Unable to add items to location; No items defined');
+        }
+    };
     // Commands that apply to all games
     Game.prototype.getCommands = function () {
         var
-            go = new CallbackCommand('go', 'Go:<br/>go &lt;destination&gt; e.g. "go south"', function (commandText, commandParts) {
+            go = new RegexCallbackCommand('go', null, 'Go:<br/>go &lt;destination&gt; e.g. "go south"', function (commandText, destination) {
                 var location = this.game.currentLocation,
-                    destination,
-                    exit,
-                    commandName;
-                if (commandParts && commandParts.length && commandParts.length > 0) {
-                    
-                    commandName = commandParts[0];
-
-                    if (commandName.toUpperCase() === 'GO' || commandName.toUpperCase() === 'EXIT' || commandName.toUpperCase() === 'LEAVE') {
-                        if (commandParts.length === 1) {
-                            this.game.printInformation('Usage:<br/>' + this.getDescription());
-                        } else {
-                            destination = commandParts[1];
-                            exit = location.getExit(destination);
-                            if (!exit) {
-                                this.game.printError('"' + destination + '" is not an exit.');
-                            } else {
-                                this.game.goTo(exit.destinationLocationId);
-                            }
-                        }
-                    }
+                    exit;
+                
+                exit = location.getExit(destination);
+                if (!exit) {
+                    this.game.printError('"' + destination + '" is not an exit.');
+                } else {
+                    this.game.goTo(exit.destinationLocationId);
                 }
+            }),
+            // Just another name for go, a bit nicer to read.
+            // TODO: Rework to reuse go instance
+            enter = new RegexCallbackCommand('enter', null, 'Enter:<br/>go &lt;destination&gt; e.g. "Enter Door 1"', function (commandText, destination) {
+                var location = this.game.currentLocation,
+                    exit;
+                
+                exit = location.getExit(destination);
+                if (!exit) {
+                    this.game.printError('"' + destination + '" is not an exit.');
+                } else {
+                    this.game.goTo(exit.destinationLocationId);
+                }
+            }),
+            supergo = new RegexCallbackCommand('supergo', null, 'SuperGo:<br/>supergo &lt;location code&gt; - debug tool e.g. "supergo room1"', function (commandText, destination) {
+                this.game.goTo(destination);
+            }),
+            supertake = new RegexCallbackCommand('supertake', null, 'SuperTake:<br/>supergo &lt;item code&gt; - debug tool e.g. "supertake flashlight"', function (commandText, itemcode) {
+                this.game.addItemToInventory(itemcode);
             }),
             help = new CallbackCommand('help', 'help &lt;<span class="command">command</span>&gt; - help on a specific command, e.g "help go"', function (commandText, commandParts) {
                 var commands,
                     command,
                     i,
                     message = '';
-                if (commandParts && commandParts.length && commandParts.length > 0 && commandParts[0].toUpperCase() === 'HELP') {
+                
+                if (commandText && commandText.toUpperCase().startsWith(this.shortName.toUpperCase())) {
                     commands = this.game.availableCommands;
                     if (commandParts.length > 1) {
                         // Find command and print 
@@ -448,139 +609,75 @@ var AdventureMachine = (function ($) {
                     }
                 }
             }),
-            examine = new CallbackCommand('examine', 'examine &lt;<span class="command">item</span>&gt; - examine an item, e.g "examine cupboard"', function (commandText, commandParts) {
-                var items,
-                    item,
-                    itemCode,
-                    i,
-                    itemName,
-                    found;
-                if (commandParts && commandParts.length && commandParts.length > 0 && commandParts[0].toUpperCase() === this.getShortName().toUpperCase()) {
+            examine = new RegexCallbackCommand('examine', null, 'examine &lt;<span class="command">item/npc</span>&gt; - examine an item or NPC, e.g "examine cupboard" or "examine clerk"', function (commandText, itemName) {
+                var item;
                     
-                    if (commandParts.length === 1) {
-                        this.game.printInformation('Usage:<br/>' + this.getDescription());
-                    } else {
-                        // Find target object in those available in the player's inventory and the current location
-                        items = $.extend({}, this.game.currentLocation.items.items, this.game.inventory.items);
-                        itemName = '';
-                        for (i = 1; i < commandParts.length; i += 1) {
-                            if (commandParts[i].length > 0) {
-                                if (itemName.length > 0) {
-                                    itemName += ' ';
-                                }
-                                itemName += commandParts[i];
-                            }
-                        }
-                        found = false;
-                        for (itemCode in items) {
-                            if (items.hasOwnProperty(itemCode)) {
-                                item = items[itemCode];
-                                if (item.title.toUpperCase() === itemName.toUpperCase()) {
-                                    found = true;
-                                    this.game.printDescription(item.description);
-                                }
-                            }
-                        }
-                        if (!found) {
-                            this.game.printError('Unknown item: ' + itemName);
-                        }
-                    }
+                // Find target object in those available in the player's inventory and the current location
+                item = this.game.inventory.findItemByName(itemName) || this.game.currentLocation.items.findItemByName(itemName) || this.game.currentLocation.npcs.findItemByName(itemName);
+                if (item) {
+                    this.game.printDescription(item.description);
+                } else {
+                    this.game.printError('Unknown item: ' + itemName);
                 }
             }),
             // Take an item from the current location
-            take = new CallbackCommand('take', 'take &lt;<span class="command">item</span>&gt; - take an item, e.g "take key"', function (commandText, commandParts) {
-                var items,
-                    item,
-                    itemCode,
-                    i,
-                    itemName,
-                    found;
+            take = new RegexCallbackCommand('take', null, 'take &lt;<span class="command">item</span>&gt; - take an item, e.g "take key"', function (commandText, itemName) {
+                var item;
                 
-                
-                if (commandParts && commandParts.length && commandParts.length > 0 && commandParts[0].toUpperCase() === this.getShortName().toUpperCase()) {
-                    
-                    if (commandParts.length === 1) {
-                        this.game.printInformation('Usage:<br/>' + this.getDescription());
+                // Find target object in those available in the current location
+                item = this.game.currentLocation.items.findItemByName(itemName);
+                if (item) {
+                    if (item.isCollectable() === true) {
+                        this.game.currentLocation.items.takeItem(item.id);
+                        this.game.inventory.addItem(item);
+                        this.game.printInformation('"' + item.title + '" added to inventory.');
                     } else {
-                        // Find target object in those available in the current location
-                        items = this.game.currentLocation.items.items;
-                        itemName = '';
-                        for (i = 1; i < commandParts.length; i += 1) {
-                            if (commandParts[i].length > 0) {
-                                if (itemName.length > 0) {
-                                    itemName += ' ';
-                                }
-                                itemName += commandParts[i];
-                            }
-                        }
-                        found = false;
-                        for (itemCode in items) {
-                            if (items.hasOwnProperty(itemCode)) {
-                                item = items[itemCode];
-                                if (item.title.toUpperCase() === itemName.toUpperCase()) {
-                                    found = true;
-                                    if (item.isCollectable() === true) {
-                                        this.game.currentLocation.items.takeItem(item.id);
-                                        this.game.inventory.addItem(item);
-                                        this.game.printInformation('"' + item.title + '" added to inventory.');
-                                    } else {
-                                        this.game.printError('You cannot take this item');
-                                    }
-                                }
-                            }
-                        }
-                        if (!found) {
-                            this.game.printError('Unknown item: ' + itemName);
-                        }
+                        this.game.printError('You cannot take this item');
                     }
+                } else {
+                    this.game.printError('Unknown item: ' + itemName);
                 }
+                
             }),
-            // Take an item from the current location
-            use = new CallbackCommand('use', 'use &lt;<span class="command">item</span>&gt; - use an item, e.g "use gold key" or "use key on blue door"', function (commandText) {
-                var simplePattern,
-                    fullPattern,
-                    regexResult,
-                    itemName,
-                    targetName,
-                    target,
+            // Use an item, on its own or on another item or NPC
+            use = new RegexCallbackCommand('use', 'on', 'use &lt;<span class="command">item</span>&gt; - use an item, e.g "use gold key" or "use key on blue door"', function (commandText, itemName, targetName) {
+                var target,
                     item;
                 
+                item = this.game.inventory.findItemByName(itemName) || this.game.currentLocation.items.findItemByName(itemName);
+                if (targetName) {
+                    target = this.game.inventory.findItemByName(targetName) || this.game.currentLocation.items.findItemByName(targetName) || this.game.currentLocation.npcs.findItemByName(itemName);
+                }
                 
-                if (commandText && commandText.trim().toUpperCase().startsWith(this.getShortName().toUpperCase())) {
-                    
-                    simplePattern = '^use[ ]+(.*)';
-                    fullPattern = simplePattern + '[ ]+on[ ]+(.*)';
-                    regexResult = new RegExp(fullPattern, 'i').exec(commandText);
-                    if (regexResult) {
-                        // Full command matched
-                        itemName = regexResult[1];
-                        targetName = regexResult[2];
-                        target = this.game.inventory.findItemByName(targetName) || this.game.currentLocation.items.findItemByName(targetName);
-                    } else {
-                        regexResult = new RegExp(simplePattern, 'i').exec(commandText);
-                        if (regexResult) {
-                            // Basic command matched
-                            itemName = regexResult[1];
-                        }
-                    }
-                    
-                    if (itemName) {
-                        item = this.game.inventory.findItemByName(itemName) || this.game.currentLocation.items.findItemByName(itemName);
-                        if (!item) {
-                            this.game.printError('Can\'t find: "' + itemName + '"');
-                        } else if (targetName && !target) {
+                if (!item) {
+                    this.game.printError('Can\'t find: "' + itemName + '"');
+                } else {
+                       
+                    if (targetName) {
+                        if (!target) {
                             this.game.printError('Can\'t find: "' + targetName + '"');
                         } else {
                             item.onUse(target);
                         }
                     } else {
-                        // Only command name used, print usage
-                        this.game.printInformation('Usage:<br/>' + this.getDescription());
+                        item.onUse();
                     }
-                    
+                
                 }
+                 
+            }),
+            // Drop an item, removing it from the player's inventory and leaving it in the current location
+            drop = new RegexCallbackCommand('drop', null, 'drop &lt;<span class="command">item</span>&gt; - drop an item, e.g "drop gold key"', function (commandText, itemName) {
+                var item = this.game.inventory.findItemByName(itemName);
                 
-                
+                if (!item) {
+                    this.game.printError('Can\'t find: "' + itemName + '"');
+                } else {
+                    this.game.inventory.removeItem(item.id);
+                    this.game.currentLocation.items.addItem(item);
+                    this.game.printInformation('Dropped "' + item.title + '"');
+                }
+                 
             }),
             // Display the collection of items currently in the player's posession
             inventory = new CallbackCommand('inventory', 'inventory - display the items currently in your posession', function (commandText) {
@@ -596,9 +693,11 @@ var AdventureMachine = (function ($) {
                     found = false;
                     for (itemCode in items) {
                         if (items.hasOwnProperty(itemCode)) {
-                            found = true;
                             item = items[itemCode];
-                            message += '<span class="command">' + item.title + '</span><br/>';
+                            if (item) {
+                                found = true;
+                                message += '<span class="command">' + item.title + '</span><br/>';
+                            }
                         }
                     }
                     if (!found) {
@@ -612,25 +711,219 @@ var AdventureMachine = (function ($) {
                 if (commandText && commandText.trim().toUpperCase() === this.getShortName().toUpperCase()) {
                     this.game.displayCurrentLocationInfo();
                 }
+            }),
+            // Ask an NPC about a particular topic
+            ask = new RegexCallbackCommand('ask', 'about', 'ask &lt;<span class="command">NPC</span>&gt; about &lt;topic&gt; - ask an NPC about a topic, e.g "ask clerk about accounts"', function (commandText, npcName, topic) {
+                var npc;
+                
+                npc = this.game.currentLocation.npcs.findItemByName(npcName);
+                if (!npc) {
+                    this.game.printError('Can\'t find: "' + npcName + '"');
+                } else if (!topic || topic.trim().length === 0) {
+                    this.game.printError('You must specify a topic to ask about, e.g. "ask ' + npc.getTitle() + ' about topic"');
+                } else {
+                    npc.onAsk(topic);
+                }
+                 
+            }),
+            // Tell an NPC about a particular topic
+            tell = new RegexCallbackCommand('tell', 'about', 'tell &lt;<span class="command">NPC</span>&gt; about &lt;topic&gt; - tell an NPC about a topic, e.g "tell clerk about missing money"', function (commandText, npcName, topic) {
+                var npc;
+                
+                npc = this.game.currentLocation.npcs.findItemByName(npcName);
+                if (!npc) {
+                    this.game.printError('Can\'t find: "' + npcName + '"');
+                } else if (!topic || topic.trim().length === 0) {
+                    this.game.printError('You must specify a topic to talk about, e.g. "tell ' + npc.getTitle() + ' about topic"');
+                } else {
+                    npc.onTell(topic);
+                }
+                 
+            }),
+            // Talk to an NPC
+            talk = new RegexCallbackCommand('talk to', 'about', 'talk to &lt;<span class="command">NPC</span>&gt; about &lt;topic&gt; - tell an NPC, e.g "talk to shopkeeper" or "talk to clerk about the weather"', function (commandText, npcName, topic) {
+                var npc;
+                
+                npc = this.game.currentLocation.npcs.findItemByName(npcName);
+                if (!npc) {
+                    this.game.printError('Can\'t find: "' + npcName + '"');
+                } else {
+                    npc.onTalk(topic);
+                }
+            }),
+            // Give an item to an NPC
+            give = new RegexCallbackCommand('give', 'to', 'give &lt;<span class="command">item</span>&gt; about &lt;<span class="command">NPC</span>&gt; - give an item to an NPC, e.g "give money to shopkeeper"', function (commandText, itemName, npcName) {
+                var item,
+                    npc;
+                
+                item = this.game.inventory.findItemByName(itemName) || this.game.currentLocation.items.findItemByName(itemName);
+                if (!item) {
+                    this.game.printError('Can\'t find: "' + itemName + '"');
+                } else if (!npcName) {
+                    this.game.printError('You must specify an NPC to give the item to.');
+                }
+                
+                npc = this.game.currentLocation.npcs.findItemByName(npcName);
+                if (!npc) {
+                    this.game.printError('Can\'t find: "' + npcName + '"');
+                } else {
+                    npc.onGive(item);
+                }
+                 
             });
         
-        // TODO: Other standard interactions like use, drop, ask, tell/say, combine...
+        // TODO: Other standard interactions like give, combine...
         
-        return [help, go, examine, take, use, inventory, look];
+        return [help, go, enter, examine, take, use, drop, inventory, look, ask, tell, talk, give, supergo, supertake];
     };
+    
+    /*
+     * Base entity that provides a starting point for functionality relating to in-game entities that the player can
+     * interact with, namely items, locations and NPCs
+     * Provides the ability to have static or dynamic titles and descriptions, and to have primitive scheduled behaviour
+     * used a simple timer (a single timer is shared across all entities).
+     */
+    BaseEntity = function (id, title, description, onTickCallback, tickInterval) {
+        this.id = id;
+        this.title = title;
+        this.description = description;
+        this.onTickCallback = onTickCallback;
+        this.tickInterval = tickInterval;
+        this.game = undefined;
+    };
+    BaseEntity.prototype.getDescription = function () {
+        var description;
+        if (this.description instanceof Function) {
+            description = this.description.call(this);
+        } else {
+            description = this.description;
+        }
+        
+        return description;
+    };
+    BaseEntity.prototype.getTitle = function () {
+        var title;
+        if (this.title instanceof Function) {
+            title = this.title.call(this);
+        } else {
+            title = this.title;
+        }
+        
+        return title;
+    };
+    
+    /*
+     * Define NPCs, (non-player) characters that can be interacted with in-game.
+     */
+    NPC = function (id, title, description, onAskCallback, onTellCallback, onTalkCallback, onGiveCallback, onUseCallback) {
+        BaseEntity.call(this, id, title, description);
+        
+        this.onAskCallback = onAskCallback;
+        this.onTellCallback = onTellCallback;
+        this.onTalkCallback = onTalkCallback;
+        this.onGiveCallback = onGiveCallback;
+        this.onUseCallback = onUseCallback;
+        this.currentTopic = undefined;
+    };
+    NPC.prototype = new BaseEntity();
+    NPC.prototype.constructor = NPC;
+    NPC.prototype.reply = function (text) {
+        this.game.printMessage('<span class="location">' + this.getTitle() + '</span>: ' + text);
+    };
+    NPC.prototype.onAsk = function (topic) {
+        this.currentTopic = topic;
+        if (this.onAskCallback && this.onAskCallback instanceof Function) {
+            this.onAskCallback.apply(this, arguments);
+        } else {
+            this.reply('I don\'t know anything about that.');
+        }
+    };
+    NPC.prototype.onTell = function (topic) {
+        this.currentTopic = topic;
+        if (this.onTellCallback && this.onTellCallback instanceof Function) {
+            this.onTellCallback.apply(this, arguments);
+        } else {
+            this.reply('I don\'t know anything about that.');
+        }
+    };
+    NPC.prototype.onTalk = function (topic) {
+        this.currentTopic = topic;
+        if (this.onTalkCallback && this.onTalkCallback instanceof Function) {
+            this.onTalkCallback.apply(this, arguments);
+        } else {
+            this.reply('Can I help you?');
+        }
+    };
+    NPC.prototype.onGive = function () {
+        if (this.onGiveCallback && this.onGiveCallback instanceof Function) {
+            this.onGiveCallback.apply(this, arguments);
+        } else {
+            this.reply('No thanks.');
+        }
+    };
+    NPC.prototype.onUse = function () {
+        if (this.onUseCallback && this.onUseCallback instanceof Function) {
+            this.onUseCallback.apply(this, arguments);
+        } else {
+            this.reply('What are you doing?');
+        }
+    };
+    // Performs some simple matching on the question being asked of the NPC
+    NPC.prototype.speakingAbout = function (topics) {
+        var relevant,
+            i,
+            topic,
+            statement;
+        
+        relevant = false;
+        statement = (this.currentTopic || '').toUpperCase();
+        if (topics instanceof Array === false) {
+            topics = [topics];
+        }
+        
+        if (topics && topics instanceof Array && statement && statement.trim().length > 0) {
+            for (i = 0; i < topics.length && relevant === false; i += 1) {
+				topic = (topics[i] || '').toUpperCase();
+                if (statement.indexOf(topic) >= 0) {
+                    relevant = true;
+                }
+            }
+        }
+        
+        return relevant;
+    };
+    
     
     /*
      * Define the Location class. Instances of this class will represent the various places in the active game that 
      * the user can explore.
      */
-    Location = function (id, title, description, itemCodes) {
-        this.id = id;
-        this.title = title;
-        this.description = description;
+    Location = function (id, title, description, exits, itemCodes, npcCodes) {
+        var i,
+            exit;
+        
+        BaseEntity.call(this, id, title, description);
+        
         this.exits = [];
         this.itemCodes = itemCodes || [];
         this.items = new Inventory();
+        this.npcCodes = npcCodes || [];
+        this.npcs = new Inventory();
+        this.visits = 0;
+        
+        if (exits && exits instanceof Array) {
+            for (i = 0; i < exits.length; i += 1) {
+                exit = exits[i];
+                if (exit instanceof Array && exit.length >= 2) {
+                    this.addExit(exit[0], exit[1]);
+                } else if (exit instanceof Exit) {
+                    this.exits.push(exit);
+                }
+            }
+        }
     };
+    Location.prototype = new BaseEntity();
+    Location.prototype.constructor = Location;
     Location.prototype.addExit = function (exitName, destinationLocationId) {
         this.exits.push(new Exit(exitName, destinationLocationId));
     };
@@ -655,32 +948,45 @@ var AdventureMachine = (function ($) {
     Location.prototype.addItem = function (item) {
         this.items.addItem(item);
     };
+    Location.prototype.addNpc = function (npc) {
+        this.npcs.addItem(npc);
+    };
+    Location.prototype.incrementVisits = function () {
+        this.visits += 1;
+    };
     
     /*
      * Represents a tranition point between the current location and another
      */
-    Exit = function (exitName, destinationLocationId) {
+    Exit = function (exitName, destinationLocationId, onExitCallback) {
         this.exitName = exitName;
         this.destinationLocationId = destinationLocationId;
+        this.onExitCallback = onExitCallback;
+    };
+    Exit.prototype.onExit = function () {
+        if (this.onExitCallback && this.onExitCallback instanceof Function) {
+            this.onExitCallback.call(this);
+        }
     };
     
     /*
      * An item is something in the game that the player can examine, use or potentially pick up and add to their current inventory
      */
     Item = function (id, title, description, onUseCallback, usable, collectable) {
-        this.id = id;
-        this.title = title;
-        this.description = description;
+        BaseEntity.call(this, id, title, description);
+        
         this.onUseCallback = onUseCallback;
         this.game = undefined;
         this.usable = (usable === undefined) ? true : usable;
         this.collectable = (collectable === undefined) ? true : collectable;
     };
-    Item.prototype.onUse = function () {
+    Item.prototype = new BaseEntity();
+    Item.prototype.constructor = Item;
+    Item.prototype.onUse = function (target) {
         if (this.onUseCallback) {
             this.onUseCallback.apply(this, arguments);
-        } else {
-            return false;
+        } else if (target && target instanceof NPC) {
+            target.onUse();
         }
     };
     // Can the item be picked up and added to the player's inventory? E.g. flashlight: yes, filing cabinet: no
@@ -691,6 +997,7 @@ var AdventureMachine = (function ($) {
     Item.prototype.isUsable = function () {
         return this.usable;
     };
+    
     
     /*
      * Define a Fixture class, which represents an item that can't be picked up, e.g a filing cabinet
@@ -703,20 +1010,20 @@ var AdventureMachine = (function ($) {
     
     /*
      * The Inventory class is how collections of items are managed, e.g. the player's current inventory of items in
-     * their posession, the items available in a given location and so on.
+     * their posession, the items available in a given location and so on. Also used to manage NPCs
      */
     Inventory = function (game, item) {
         this.game = game;
         this.items = {};
         
-        if (item instanceof Item) {
+        if (item instanceof BaseEntity) {
             this.addItem(item);
         } else if (item instanceof Array) {
             this.addItems(item);
         }
     };
     Inventory.prototype.addItem = function (item) {
-        if (item instanceof Item) {
+        if (item instanceof BaseEntity) {
             if (this.game) {
                 item.game = this.game;
             }
@@ -752,7 +1059,7 @@ var AdventureMachine = (function ($) {
         for (itemCode in this.items) {
             if (this.items.hasOwnProperty(itemCode)) {
                 item = this.items[itemCode];
-                if (item && item.title.toUpperCase() === itemName.toUpperCase()) {
+                if (item && item.title.toUpperCase() === itemName.trim().toUpperCase()) {
                     return item;
                 }
             }
@@ -767,9 +1074,12 @@ var AdventureMachine = (function ($) {
         Game: Game,
         Command: Command,
         CallbackCommand: CallbackCommand,
+        RegexCallbackCommand: RegexCallbackCommand,
+        Story: Story,
+        BaseEntity: BaseEntity,
         Location: Location,
         Exit: Exit,
-        Story: Story,
+        NPC: NPC,
         Item: Item,
         Fixture: Fixture,
         Inventory: Inventory
