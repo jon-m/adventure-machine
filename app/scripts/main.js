@@ -118,5 +118,11 @@ if (!AdventureMachine) {
     // TODO: Custom 'onEnter' callbacks for rooms
     // TODO: Source commands from external script, as they may be genre-specific
     // TODO: Refactor custom commands into base entity & load from items, npcs when loading a room
+    // TODO: Decouple console completely, using events or similar to link to game
+    // TODO: Console can render command names and iteractive elements like items & npcs as links. Clicking adds text to console.
+    // TODO: Button-driven commands: can click 'ask', then select an NPC from a list, then type a topic, for example
+    // TODO: Cheat panel on console, select a location to go straight there, an item to add it to inventory, an NPC to add it to room etc
+    // TODO: Define story from a text file. How to cope with interactive elements? Boil it down to standard text commands specific to game definitions?
+    //          Can embed JavaScript with a defined contract with your environment: https://developers.google.com/caja/docs/runningjavascript/
 
 }(jQuery)); // AdventureMachine

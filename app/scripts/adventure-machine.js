@@ -915,7 +915,11 @@ var AdventureMachine = (function ($) {
             for (i = 0; i < exits.length; i += 1) {
                 exit = exits[i];
                 if (exit instanceof Array && exit.length >= 2) {
-                    this.addExit(exit[0], exit[1]);
+                    //onExitCallback = undefined;
+                    if (exit.length >= 3) {
+                        //onExitCallback = exit[2];
+                    }
+                    this.addExit(exit[0], exit[1], exit[2]);
                 } else if (exit instanceof Exit) {
                     this.exits.push(exit);
                 }
